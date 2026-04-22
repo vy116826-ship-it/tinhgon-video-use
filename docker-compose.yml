@@ -1,0 +1,96 @@
+version: '3.8'
+
+services:
+  # ── Frontend (React + Nginx) ───────────────────────────────────────
+  frontend:
+    build: ./frontend
+    container_name: videouse-frontend
+    restart: unless-stopped
+    depends_on:
+      - backend
+    networks:
+      - videouse-net
+
+  # ── Backend API (FastAPI) ──────────────────────────────────────────
+  backend:
+    build: ./backend
+    container_name: videouse-backend
+    restart: unless-stopped
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers 2
+    volumes:
+      - ./data/uploads:/app/data/uploads
+      - ./data/projects:/app/data/projects
+      - ./data/outputs:/app/data/outputs
+      - ./data/db:/app/data/db
+      - ./helpers:/app/helpers:ro
+    environment:
+      - REDIS_URL=redis://redis:6379/0
+      - DATABASE_URL=sqlite+aiosqlite:////app/data/db/video_use.db
+      - SECRET_KEY=${SECRET_KEY:-video-use-secret-key-change-me-2024}
+      - ELEVENLABS_API_KEY=${ELEVENLABS_API_KEY:-}
+      - GOOGLE_TTS_API_KEY=${GOOGLE_TTS_API_KEY:-}
+      - HELPERS_DIR=/app/helpers
+      - DATA_DIR=/app/data
+    depends_on:
+      - redis
+    networks:
+      - videouse-net
+
+  # ── Celery Worker ──────────────────────────────────────────────────
+  worker:
+    build: ./backend
+    container_name: videouse-worker
+    restart: unless-stopped
+    command: celery -A app.celery_app worker --loglevel=info --concurrency=2
+    volumes:
+      - ./data/uploads:/app/data/uploads
+      - ./data/projects:/app/data/projects
+      - ./data/outputs:/app/data/outputs
+      - ./data/db:/app/data/db
+      - ./helpers:/app/helpers:ro
+    environment:
+      - REDIS_URL=redis://redis:6379/0
+      - CELERY_BROKER_URL=redis://redis:6379/0
+      - CELERY_RESULT_BACKEND=redis://redis:6379/0
+      - DATABASE_URL=sqlite:////app/data/db/video_use.db
+      - SECRET_KEY=${SECRET_KEY:-video-use-secret-key-change-me-2024}
+      - ELEVENLABS_API_KEY=${ELEVENLABS_API_KEY:-}
+      - GOOGLE_TTS_API_KEY=${GOOGLE_TTS_API_KEY:-}
+      - HELPERS_DIR=/app/helpers
+      - DATA_DIR=/app/data
+    depends_on:
+      - redis
+    networks:
+      - videouse-net
+
+  # ── Redis ──────────────────────────────────────────────────────────
+  redis:
+    image: redis:7-alpine
+    container_name: videouse-redis
+    restart: unless-stopped
+    volumes:
+      - redis_data:/data
+    networks:
+      - videouse-net
+
+  # ── Nginx Reverse Proxy ───────────────────────────────────────────
+  nginx:
+    image: nginx:alpine
+    container_name: videouse-nginx
+    restart: unless-stopped
+    ports:
+      - "${APP_PORT:-8880}:80"
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+    depends_on:
+      - frontend
+      - backend
+    networks:
+      - videouse-net
+
+volumes:
+  redis_data:
+
+networks:
+  videouse-net:
+    driver: bridge
