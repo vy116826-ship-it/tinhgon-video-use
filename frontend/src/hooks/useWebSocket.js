@@ -12,7 +12,14 @@ export function useWebSocket(jobId) {
 
   const connect = useCallback(() => {
     const token = localStorage.getItem('token');
-    const wsBase = API_BASE.replace('http', 'ws');
+    let wsBase;
+    if (API_BASE && API_BASE.startsWith('http')) {
+      wsBase = API_BASE.replace('http', 'ws');
+    } else {
+      // Derive from current page location (production mode through Nginx)
+      const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+      wsBase = `${proto}//${window.location.host}`;
+    }
     const url = jobId
       ? `${wsBase}/ws/jobs/${jobId}?token=${token}`
       : `${wsBase}/ws/dashboard?token=${token}`;
