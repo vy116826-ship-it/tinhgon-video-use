@@ -15,6 +15,7 @@ from app.api.routes.uploads import router as uploads_router
 from app.api.routes.jobs import router as jobs_router
 from app.api.routes.ws import router as ws_router
 from app.api.routes.templates import router as templates_router
+from app.api.routes.settings import router as settings_router
 
 
 @asynccontextmanager
@@ -49,6 +50,7 @@ app.include_router(uploads_router)
 app.include_router(jobs_router)
 app.include_router(ws_router)
 app.include_router(templates_router)
+app.include_router(settings_router)
 
 # ── Static file serving for outputs ─────────────────────────────────────
 OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
