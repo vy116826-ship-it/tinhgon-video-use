@@ -28,16 +28,21 @@ export default function Templates() {
   const [aspect, setAspect] = useState('');
   const [gridView, setGridView] = useState(true);
   const [previewTemplate, setPreviewTemplate] = useState(null);
+  const [ready, setReady] = useState(false);
 
   useEffect(() => { loadCategories(); }, []);
-  useEffect(() => { loadTemplates(); }, [activeCategory, sort, aspect]);
+  useEffect(() => { if (ready) loadTemplates(); }, [activeCategory, sort, aspect, ready]);
 
   const loadCategories = async () => {
     try {
       const res = await api.get('/api/templates/categories');
       setCategories(res.data);
-      if (res.data.length === 0) await seedTemplates();
-    } catch { /* ignore */ }
+      if (res.data.length === 0) {
+        await seedTemplates();
+        return; // seedTemplates will re-call loadCategories
+      }
+      setReady(true);
+    } catch { setReady(true); }
   };
 
   const seedTemplates = async () => {
