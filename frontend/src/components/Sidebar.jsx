@@ -1,7 +1,7 @@
 import { NavLink, useNavigate } from 'react-router-dom';
 import {
   LayoutDashboard, FolderOpen, Upload, Scissors,
-  Settings, LogOut, Film
+  Settings, LogOut, Film, Palette
 } from 'lucide-react';
 
 export default function Sidebar() {
@@ -17,6 +17,7 @@ export default function Sidebar() {
   const navItems = [
     { to: '/', icon: LayoutDashboard, label: 'Dashboard' },
     { to: '/projects', icon: FolderOpen, label: 'Projects' },
+    { to: '/templates', icon: Palette, label: 'Templates' },
     { to: '/settings', icon: Settings, label: 'Settings' },
   ];
 

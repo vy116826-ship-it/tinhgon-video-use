@@ -7,6 +7,7 @@ import Projects from './pages/Projects';
 import ProjectDetail from './pages/ProjectDetail';
 import JobMonitor from './pages/JobMonitor';
 import Settings from './pages/Settings';
+import Templates from './pages/Templates';
 
 function ProtectedRoute({ children }) {
   const token = localStorage.getItem('token');
@@ -34,6 +35,7 @@ export default function App() {
           <Route path="/projects" element={<Projects />} />
           <Route path="/projects/:projectId" element={<ProjectDetail />} />
           <Route path="/projects/:projectId/jobs/:jobId" element={<JobMonitor />} />
+          <Route path="/templates" element={<Templates />} />
           <Route path="/settings" element={<Settings />} />
         </Route>
 

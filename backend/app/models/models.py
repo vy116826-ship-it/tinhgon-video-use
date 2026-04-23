@@ -152,3 +152,44 @@ class Setting(Base):
     __table_args__ = (
         # Composite unique on user_id + key
     )
+
+
+class TemplateCategory(Base):
+    __tablename__ = "template_categories"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    name = Column(String(100), unique=True, nullable=False)
+    slug = Column(String(100), unique=True, nullable=False, index=True)
+    icon = Column(String(10), default="🎬")
+    order = Column(Integer, default=0)
+    created_at = Column(DateTime, default=utcnow)
+
+    templates = relationship("Template", back_populates="category", cascade="all, delete-orphan")
+
+
+class Template(Base):
+    __tablename__ = "templates"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    category_id = Column(Integer, ForeignKey("template_categories.id", ondelete="CASCADE"), nullable=False)
+    name = Column(String(255), nullable=False)
+    slug = Column(String(255), unique=True, nullable=False, index=True)
+    description = Column(Text, default="")
+    thumbnail_url = Column(Text, default="")
+    preview_video_url = Column(Text, default="")
+    tags = Column(JSON, default=list)                 # ["trending", "cinematic"]
+    config = Column(JSON, default=dict)               # Edit config preset
+    # Popularity
+    use_count = Column(Integer, default=0)
+    view_count = Column(Integer, default=0)
+    is_featured = Column(Boolean, default=False)
+    is_active = Column(Boolean, default=True)
+    # Metadata
+    duration_hint = Column(String(50), default="")    # "30s", "60s", "3min"
+    aspect_ratio = Column(String(20), default="16:9") # "16:9", "9:16", "1:1"
+    difficulty = Column(String(20), default="easy")   # "easy", "medium", "advanced"
+    created_at = Column(DateTime, default=utcnow)
+    updated_at = Column(DateTime, default=utcnow, onupdate=utcnow)
+
+    category = relationship("TemplateCategory", back_populates="templates")
+
