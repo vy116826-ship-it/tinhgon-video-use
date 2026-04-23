@@ -89,8 +89,8 @@ PIPELINE_STEPS = [
     ("pack", "📦 Packing Transcripts"),
     ("analyze", "🔍 Analyzing Content"),
     ("cut", "✂️ Auto-Cutting"),
-    ("grade", "🎨 Color Grading"),
     ("render", "🎬 Rendering Video"),
+    ("grade", "🎨 Color Grading"),
     ("subtitles", "📝 Burning Subtitles"),
     ("finalize", "✅ Finalizing Output"),
 ]

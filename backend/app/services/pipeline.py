@@ -12,6 +12,7 @@ from typing import Callable, Dict, List, Optional
 
 from app.core.config import HELPERS_DIR, FFMPEG_PATH, FFPROBE_PATH, OUTPUT_DIR, PROJECT_DIR
 from app.services.auto_editor import generate_edl, generate_srt, detect_silences, detect_fillers
+from app.services.transcription import transcribe as transcribe_audio
 from app.services.ffprobe import probe_video_sync
 
 
@@ -58,11 +59,10 @@ class VideoPipeline:
             self.step_pack()
             self.step_analyze()
             self.step_cut()
+            self.step_render()
 
             if self.config.get("grade_preset", "none") != "none":
                 self.step_grade()
-
-            self.step_render()
 
             if self.config.get("subtitles_enabled", True):
                 self.step_subtitles()
@@ -74,9 +74,10 @@ class VideoPipeline:
             raise
 
     def step_transcribe(self):
-        """Transcribe all source videos."""
+        """Transcribe all source videos using configured API."""
         self._log("transcribe", 0, "Starting transcription...")
         total = len(self.upload_files)
+        backend = self.config.get("transcription_backend", "elevenlabs")
 
         for i, upload in enumerate(self.upload_files):
             filepath = upload["filepath"]
@@ -88,13 +89,29 @@ class VideoPipeline:
             cache_file = self.transcripts_dir / f"{source_id}.json"
             if cache_file.exists():
                 with open(cache_file) as f:
-                    self.transcripts[source_id] = json.load(f)
-                self._log("transcribe", ((i + 1) / total) * 80, f"Using cached transcript for {source_id}")
-                continue
+                    cached = json.load(f)
+                # Only use cache if it has real word data (not just [speech] blocks)
+                has_real_words = any(
+                    w.get("text", "") != "[speech]" for w in cached.get("words", [])
+                )
+                if has_real_words or cached.get("backend") not in ("ffmpeg-fallback", None):
+                    self.transcripts[source_id] = cached
+                    self._log("transcribe", ((i + 1) / total) * 80,
+                              f"Using cached transcript ({cached.get('backend', 'unknown')})")
+                    continue
 
-            # Try transcription via helper or built-in
-            backend = self.config.get("transcription_backend", "elevenlabs")
-            transcript = self._transcribe_file(filepath, backend)
+            # Transcribe using the real service
+            try:
+                transcript = transcribe_audio(filepath, backend, work_dir=self.work_dir)
+                used_backend = transcript.get("backend", backend)
+                word_count = len(transcript.get("words", []))
+                self._log("transcribe", ((i + 0.8) / total) * 80,
+                          f"Transcribed via {used_backend}: {word_count} words")
+            except Exception as e:
+                self._log("transcribe", ((i + 0.5) / total) * 80,
+                          f"Transcription API failed: {e}, using FFmpeg fallback")
+                transcript = transcribe_audio(filepath, "fallback", work_dir=self.work_dir)
+
             self.transcripts[source_id] = transcript
 
             # Cache it
@@ -104,101 +121,6 @@ class VideoPipeline:
             self._log("transcribe", ((i + 1) / total) * 80, f"Transcribed: {source_id}")
 
         self._log("transcribe", 100, f"Transcription complete — {total} file(s)")
-
-    def _transcribe_file(self, filepath: str, backend: str) -> dict:
-        """Transcribe a single file using chosen backend."""
-        transcribe_script = HELPERS_DIR / "transcribe.py"
-
-        if transcribe_script.exists():
-            # Use the video-use helper
-            try:
-                result = subprocess.run(
-                    ["python", str(transcribe_script), filepath],
-                    capture_output=True, text=True, timeout=600,
-                    cwd=str(self.work_dir),
-                    env={**os.environ, "EDIT_DIR": str(self.edit_dir)},
-                )
-                if result.returncode == 0:
-                    # Try to find the transcript file
-                    source_id = Path(filepath).stem
-                    tx_file = self.transcripts_dir / f"{source_id}.json"
-                    if tx_file.exists():
-                        with open(tx_file) as f:
-                            return json.load(f)
-            except (subprocess.TimeoutExpired, Exception) as e:
-                self._log("transcribe", 0, f"Helper transcription failed: {e}, using fallback")
-
-        # Fallback: use FFmpeg to extract audio + basic word detection
-        return self._fallback_transcribe(filepath)
-
-    def _fallback_transcribe(self, filepath: str) -> dict:
-        """Fallback transcription using FFmpeg silence detection.
-
-        This creates a basic word-boundary transcript from audio analysis
-        when no external API is available.
-        """
-        # Extract audio and detect silence using FFmpeg
-        audio_out = self.work_dir / "temp_audio.wav"
-        subprocess.run([
-            FFMPEG_PATH, "-y", "-i", filepath,
-            "-vn", "-acodec", "pcm_s16le", "-ar", "16000", "-ac", "1",
-            str(audio_out),
-        ], capture_output=True, timeout=120)
-
-        # Use FFmpeg's silencedetect filter
-        result = subprocess.run([
-            FFMPEG_PATH, "-i", str(audio_out),
-            "-af", "silencedetect=noise=-30dB:d=0.3",
-            "-f", "null", "-",
-        ], capture_output=True, text=True, timeout=120)
-
-        # Parse silence detection output
-        import re
-        words = []
-        silence_starts = []
-        silence_ends = []
-
-        for line in result.stderr.split("\n"):
-            if "silence_start:" in line:
-                match = re.search(r"silence_start:\s*([\d.]+)", line)
-                if match:
-                    silence_starts.append(float(match.group(1)))
-            elif "silence_end:" in line:
-                match = re.search(r"silence_end:\s*([\d.]+)", line)
-                if match:
-                    silence_ends.append(float(match.group(1)))
-
-        # Create speech segments from inverse of silence
-        probe = probe_video_sync(filepath)
-        duration = probe.get("duration", 0)
-
-        speech_segments = []
-        prev_end = 0.0
-        for i in range(len(silence_starts)):
-            if silence_starts[i] > prev_end + 0.1:
-                speech_segments.append({
-                    "start": prev_end,
-                    "end": silence_starts[i],
-                })
-            if i < len(silence_ends):
-                prev_end = silence_ends[i]
-        if prev_end < duration - 0.1:
-            speech_segments.append({"start": prev_end, "end": duration})
-
-        # Create pseudo-words from speech segments
-        for seg in speech_segments:
-            words.append({
-                "text": "[speech]",
-                "start": seg["start"],
-                "end": seg["end"],
-                "speaker": "S0",
-            })
-
-        # Cleanup temp file
-        if audio_out.exists():
-            audio_out.unlink()
-
-        return {"words": words, "duration": duration}
 
     def step_pack(self):
         """Pack transcripts into readable format."""
@@ -256,40 +178,73 @@ class VideoPipeline:
         total_dur = self.edl.get("total_duration_s", 0)
         self._log("cut", 100, f"Generated EDL: {segments} segments, {total_dur:.1f}s total")
 
+    def _get_grade_filter(self, preset: str) -> str:
+        """Get FFmpeg video filter for color grading preset."""
+        if preset == "warm_cinematic":
+            # Warm tones: boost red/yellow, slight contrast, vignette
+            return (
+                "curves=r='0/0 0.25/0.28 0.5/0.55 0.75/0.78 1/1'"
+                ":g='0/0 0.25/0.24 0.5/0.50 0.75/0.76 1/1'"
+                ":b='0/0 0.25/0.20 0.5/0.45 0.75/0.72 1/0.95',"
+                "eq=contrast=1.05:brightness=0.02:saturation=1.15,"
+                "vignette=PI/5"
+            )
+        elif preset == "neutral_punch":
+            # High contrast, slightly desaturated, punchy
+            return (
+                "eq=contrast=1.15:brightness=0.01:saturation=1.10,"
+                "unsharp=3:3:0.5"
+            )
+        elif preset == "cool_blue":
+            # Cool blue tones
+            return (
+                "curves=r='0/0 0.5/0.48 1/0.95'"
+                ":g='0/0 0.5/0.50 1/1'"
+                ":b='0/0 0.25/0.28 0.5/0.55 1/1',"
+                "eq=contrast=1.08:saturation=1.05"
+            )
+        else:
+            return ""
+
     def step_grade(self):
-        """Apply color grading per segment."""
+        """Apply color grading to the rendered preview."""
         self._log("grade", 0, "Applying color grade...")
 
-        grade_script = HELPERS_DIR / "grade.py"
         grade_preset = self.config.get("grade_preset", "warm_cinematic")
-        ranges = self.edl.get("ranges", [])
+        vf = self._get_grade_filter(grade_preset)
 
-        for i, seg in enumerate(ranges):
-            source_path = seg["source"]
-            if source_path in self.sources:
-                source_path = self.sources[source_path]
+        if not vf:
+            self._log("grade", 100, "No grade filter to apply")
+            return
 
-            clip_name = f"clip_{i:03d}.mp4"
-            clip_path = self.clips_dir / clip_name
+        preview_path = self.edit_dir / "preview.mp4"
+        graded_path = self.edit_dir / "preview_graded.mp4"
 
-            # Extract segment with grade
-            cmd = [
-                FFMPEG_PATH, "-y",
-                "-i", source_path,
-                "-ss", str(seg["start"]),
-                "-to", str(seg["end"]),
-                "-c:v", "libx264", "-crf", "18",
-                "-c:a", "aac",
-                # Add 30ms audio fades
-                "-af", f"afade=t=in:st=0:d=0.03,afade=t=out:st={seg['end']-seg['start']-0.03}:d=0.03",
-                str(clip_path),
-            ]
-            try:
-                subprocess.run(cmd, capture_output=True, timeout=300)
-            except Exception as e:
-                self._log("grade", 0, f"Grade failed for clip {i}: {e}")
+        if not preview_path.exists():
+            self._log("grade", 100, "No preview to grade (will grade in render)")
+            return
 
-            self._log("grade", ((i + 1) / len(ranges)) * 100, f"Graded clip {i+1}/{len(ranges)}")
+        self._log("grade", 20, f"Applying {grade_preset} color grade...")
+
+        cmd = [
+            FFMPEG_PATH, "-y",
+            "-i", str(preview_path),
+            "-vf", vf,
+            "-c:v", "libx264", "-crf", "18", "-preset", "medium",
+            "-c:a", "copy",
+            str(graded_path),
+        ]
+        try:
+            subprocess.run(cmd, capture_output=True, timeout=1800)
+            if graded_path.exists() and graded_path.stat().st_size > 0:
+                # Replace preview with graded version
+                preview_path.unlink()
+                graded_path.rename(preview_path)
+                self._log("grade", 100, f"Color grade applied: {grade_preset}")
+            else:
+                self._log("grade", 100, "Grade output empty, keeping original")
+        except Exception as e:
+            self._log("grade", 100, f"Grade failed: {e}, keeping original")
 
     def step_render(self):
         """Render video from EDL."""
